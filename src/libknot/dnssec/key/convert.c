@@ -170,6 +170,32 @@ static int eddsa_pubkey_to_rdata(gnutls_pubkey_t key, dnssec_binary_t *rdata)
 	return KNOT_EOK;
 }
 
+/*!
+ * Convert ML-DSA public key to DNSSEC format.
+ */
+static int mldsa_pubkey_to_rdata(gnutls_pubkey_t key, dnssec_binary_t *rdata)
+{
+	assert(key);
+	assert(rdata);
+
+	_cleanup_datum_ gnutls_datum_t pub = { 0 };
+
+	int result = gnutls_pubkey_export_mldsa_raw(key, &pub);
+	if (result != GNUTLS_E_SUCCESS) {
+		return KNOT_KEY_EEXPORT;
+	}
+
+	result = dnssec_binary_alloc(rdata, pub.size);
+	if (result != KNOT_EOK) {
+		return result;
+	}
+
+	memcpy(rdata->data, pub.data, pub.size);
+	rdata->size = pub.size;
+
+	return KNOT_EOK;
+}
+
 /* -- crypto to DNSSEC ------------------------------------------------------*/
 
 /*!
@@ -295,6 +321,42 @@ static int eddsa_rdata_to_pubkey(const dnssec_binary_t *rdata, gnutls_pubkey_t k
 	return KNOT_EOK;
 }
 
+/*!
+ * Convert ML-DSA key in DNSSEC format to crypto key.
+ */
+static int mldsa_rdata_to_pubkey(const dnssec_binary_t *rdata, gnutls_pubkey_t key)
+{
+	assert(rdata);
+	assert(key);
+
+	gnutls_pk_algorithm_t algo;
+	switch (rdata->size) {
+	case 1312:
+		algo = GNUTLS_PK_MLDSA44; // Fall back to GNUTLS_PK_MLDSA44 if only 87 is defined in your headers
+		break;
+	case 1952:
+		algo = GNUTLS_PK_MLDSA65;
+		break;
+	case 2592:
+		algo = GNUTLS_PK_MLDSA44;
+		break;
+	default:
+		return KNOT_INVALID_PUBLIC_KEY;
+	}
+
+	gnutls_datum_t pub = {
+		.data = (unsigned char *)rdata->data,
+		.size = rdata->size
+	};
+
+	int result = gnutls_pubkey_import_mldsa_raw(key, algo, &pub);
+	if (result != GNUTLS_E_SUCCESS) {
+		return KNOT_KEY_EIMPORT;
+	}
+
+	return KNOT_EOK;
+}
+
 /* -- internal API --------------------------------------------------------- */
 
 /*!
@@ -315,6 +377,7 @@ int convert_pubkey_to_dnskey(gnutls_pubkey_t key, dnssec_binary_t *rdata)
 	case GNUTLS_PK_ECDSA: return ecdsa_pubkey_to_rdata(key, rdata);
 	case GNUTLS_PK_EDDSA_ED25519: return eddsa_pubkey_to_rdata(key, rdata);
 	case GNUTLS_PK_EDDSA_ED448: return eddsa_pubkey_to_rdata(key, rdata);
+	case GNUTLS_PK_MLDSA44: return mldsa_pubkey_to_rdata(key, rdata);
 	default: return KNOT_INVALID_KEY_ALGORITHM;
 	}
 }
@@ -335,6 +398,7 @@ int convert_dnskey_to_pubkey(uint8_t algorithm, const dnssec_binary_t *rdata,
 	case GNUTLS_PK_ECDSA: return ecdsa_rdata_to_pubkey(rdata, key);
 	case GNUTLS_PK_EDDSA_ED25519: return eddsa_rdata_to_pubkey(rdata, key);
 	case GNUTLS_PK_EDDSA_ED448: return eddsa_rdata_to_pubkey(rdata, key);
+	case GNUTLS_PK_MLDSA44: return mldsa_rdata_to_pubkey(rdata, key);
 	default: return KNOT_INVALID_KEY_ALGORITHM;
 	}
 }

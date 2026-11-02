@@ -171,39 +171,70 @@ static int pem_generate(gnutls_pk_algorithm_t algorithm, unsigned bits,
 	assert(pem);
 	assert(id);
 
-	// generate key
-
-	_cleanup_x509_privkey_ gnutls_x509_privkey_t key = NULL;
-	int r = gnutls_x509_privkey_init(&key);
-	if (r != GNUTLS_E_SUCCESS) {
-		return KNOT_ENOMEM;
-	}
+	dnssec_binary_t _pem = { 0 };
+	char *_id = NULL;
+	int r;
 
 	if (algorithm == GNUTLS_PK_RSA) {
+		_cleanup_x509_privkey_ gnutls_x509_privkey_t key = NULL;
+		r = gnutls_x509_privkey_init(&key);
+		if (r != GNUTLS_E_SUCCESS) {
+			return KNOT_ENOMEM;
+		}
+
 		r = gnutls_x509_privkey_generate(key, algorithm, bits, 0);
+		printf("xpg alg %d bits %d r %d (%s)\n", algorithm, bits, r, gnutls_strerror(r));
+		if (r != GNUTLS_E_SUCCESS) {
+			return KNOT_KEY_EGENERATE;
+		}
+
+		r = dnssec_pem_from_x509(key, &_pem);
+		if (r != KNOT_EOK) {
+			return r;
+		}
+
+		r = keyid_x509_hex(key, &_id);
+		if (r != KNOT_EOK) {
+			dnssec_binary_free(&_pem);
+			return r;
+		}
 	} else {
-		r = gnutls_privkey_generate(key, algorithm, 0);
-	}
-	printf("xpg alg %d bits %d r %d (%s)\n", algorithm, bits, r, gnutls_strerror(r));
-	if (r != GNUTLS_E_SUCCESS) {
-		return KNOT_KEY_EGENERATE;
-	}
+		gnutls_privkey_t key = NULL;
+		r = gnutls_privkey_init(&key);
+		if (r != GNUTLS_E_SUCCESS) {
+			return KNOT_ENOMEM;
+		}
 
-	// convert to PEM and export the ID
+		r = gnutls_privkey_generate(key, algorithm, bits, 0);
+		printf("xpg alg %d bits %d r %d (%s)\n", algorithm, bits, r, gnutls_strerror(r));
+		if (r != GNUTLS_E_SUCCESS) {
+			gnutls_privkey_deinit(key);
+			return KNOT_KEY_EGENERATE;
+		}
 
-	dnssec_binary_t _pem = { 0 };
-	r = dnssec_pem_from_x509(key, &_pem);
-	if (r != KNOT_EOK) {
-		return r;
-	}
+		r = dnssec_pem_from_privkey(key, &_pem);
+		if (r != KNOT_EOK) {
+			gnutls_privkey_deinit(key);
+			return r;
+		}
 
-	// export key ID
+		// Extract public key from abstract private key to compute key ID
+		gnutls_pubkey_t pubkey = NULL;
+		r = gnutls_pubkey_init(&pubkey);
+		if (r == GNUTLS_E_SUCCESS) {
+			r = gnutls_pubkey_import_privkey(pubkey, key, 0, 0);
+			if (r == GNUTLS_E_SUCCESS) {
+				r = keyid_pubkey_hex(pubkey, &_id);
+			}
+			gnutls_pubkey_deinit(pubkey);
+		}
 
-	char *_id = NULL;
-	r = keyid_x509_hex(key, &_id);
-	if (r != KNOT_EOK) {
-		dnssec_binary_free(&_pem);
-		return r;
+		gnutls_privkey_deinit(key);
+
+		if (r != KNOT_EOK || !_id) {
+			dnssec_binary_free(&_pem);
+			return KNOT_KEY_EGENERATE;
+		}
 	}
 
 	*id = _id;
